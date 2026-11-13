@@ -39,7 +39,7 @@
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in rowActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -67,19 +67,56 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null>
+type PoolSummary = {
+  total: number
+  by_status: Record<string, number>
+  abnormal: number
+  selectable: number
+  availability: number
+  selectable_nodes: { id: number; 节点编号: string }[]
+  pending_disable: { id: number; 节点编号: string; 原因: string }[]
+  disabled_nodes: { id: number; 节点编号: string; 原因: string }[]
+}
 
 const ENDPOINT = '/api/proxy'
-const columns = ["节点编号", "代理地址", "代理类型", "地理位置", "响应延迟", "可用率", "切换策略", "节点状态"]
-const actions = ["提交校验", "启用节点", "停用节点"]
-const statuses = ["草稿", "待校验", "已启用", "已停用"]
-const stats = [{"label": "代理节点总数", "value": 0}, {"label": "待校验节点", "value": 0}, {"label": "已启用节点", "value": 0}]
+const baseColumns = ["节点编号", "代理地址", "代理类型", "地理位置", "响应延迟", "可用率", "切换策略", "节点状态"]
+// 生命周期状态与健康结论分两列展示：人工停用与网络异常是两类不同原因
+const columns = [...baseColumns, '当前状态', '健康状态', '可参与请求']
+const ACTIONS_BY_STATUS: Record<string, string[]> = {
+  草稿: ['提交校验'],
+  待校验: ['启用节点', '上报异常'],
+  已启用: ['停用节点', '上报异常'],
+  已停用: ['提交校验', '上报异常'],
+}
+const stats = ref([
+  { label: '代理节点总数', value: 0 },
+  { label: '待校验节点', value: 0 },
+  { label: '已启用节点', value: 0 },
+  { label: '已停用节点', value: 0 },
+  { label: '异常冷却中', value: 0 },
+  { label: '健康可用率', value: '—' },
+])
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = baseColumns.slice(0, 3)
+
+function rowActions(row: Row): string[] {
+  return ACTIONS_BY_STATUS[String(row.status ?? '')] ?? []
+}
+
+function decorate(row: Row): Row {
+  const abnormal = Boolean(row.abnormal)
+  return {
+    ...row,
+    当前状态: String(row.status ?? '—'),
+    健康状态: abnormal ? '异常（冷却中）' : '健康',
+    可参与请求: row.selectable ? '是' : '否',
+  }
+}
 
 function resetFilters() {
   filters.value = {}
@@ -101,10 +138,11 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('代理池管理动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '代理池管理动作未生效，请稍后重试')
     }
-    await reload()
+    await Promise.all([reload(), loadPool()])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '代理池管理操作失败'
   }
@@ -119,12 +157,35 @@ async function reload() {
       throw new Error('代理节点列表读取失败')
     }
     const payload = await response.json()
-    rows.value = payload.items ?? []
+    rows.value = (payload.items ?? []).map(decorate)
     total.value = payload.total ?? rows.value.length
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '代理池管理列表读取失败'
   }
 }
 
-onMounted(reload)
+async function loadPool() {
+  try {
+    const response = await request(`${ENDPOINT}/pool`)
+    if (!response.ok) {
+      return
+    }
+    const pool = (await response.json()) as PoolSummary
+    stats.value = [
+      { label: '代理节点总数', value: pool.total },
+      { label: '待校验节点', value: pool.by_status['待校验'] ?? 0 },
+      { label: '已启用节点', value: pool.by_status['已启用'] ?? 0 },
+      { label: '已停用节点', value: pool.by_status['已停用'] ?? 0 },
+      { label: '异常冷却中', value: pool.abnormal },
+      { label: '健康可用率', value: `${pool.availability}%` },
+    ]
+  } catch {
+    // 统计卡片刷新失败不阻断列表展示
+  }
+}
+
+onMounted(() => {
+  void reload()
+  void loadPool()
+})
 </script>

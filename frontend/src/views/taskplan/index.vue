@@ -73,7 +73,12 @@ const ENDPOINT = '/api/taskplan'
 const columns = ["计划编号", "目标站点", "采集频率", "数据范围", "优先级", "资源配额", "预计用时", "计划状态"]
 const actions = ["启动计划", "暂停计划", "归档计划"]
 const statuses = ["草稿", "运行中", "已暂停", "已完成"]
-const stats = [{"label": "采集计划总数", "value": 0}, {"label": "运行中计划", "value": 0}, {"label": "已暂停计划", "value": 0}]
+const stats = ref([
+  { label: '采集计划总数', value: 0 },
+  { label: '运行中计划', value: 0 },
+  { label: '已暂停计划', value: 0 },
+  { label: '活动代理数量', value: 0 },
+])
 
 const rows = ref<Row[]>([])
 const total = ref(0)
@@ -101,8 +106,9 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('采集任务编排动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '采集任务编排动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -121,8 +127,39 @@ async function reload() {
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    refreshStats()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '采集任务编排列表读取失败'
+  }
+}
+
+async function refreshStats() {
+  try {
+    const response = await request(`${ENDPOINT}?size=200`)
+    if (response.ok) {
+      const payload = await response.json()
+      const all = (payload.items ?? []) as Row[]
+      stats.value[0].value = payload.total ?? all.length
+      stats.value[1].value = all.filter((row) => row.status === '运行中').length
+      stats.value[2].value = all.filter((row) => row.status === '已暂停').length
+    }
+  } catch {
+    // 统计卡片刷新失败不阻断列表展示
+  }
+  await loadActiveProxies()
+}
+
+async function loadActiveProxies() {
+  try {
+    // 活动代理数量以代理池选择口径为准：已停用与异常冷却节点不计入
+    const response = await request('/api/proxy/pool')
+    if (!response.ok) {
+      return
+    }
+    const pool = await response.json()
+    stats.value[3].value = pool.selectable ?? 0
+  } catch {
+    // 代理池统计失败不阻断采集计划列表展示
   }
 }
 

@@ -30,6 +30,22 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/pool")
+def pool_summary() -> dict[str, Any]:
+    """代理池选择口径：重试规则从这里挑可参与请求的节点，采集计划从这里看活动代理数量。
+
+    已停用（人工）与异常冷却中的节点都不会出现在可选清单里。
+    """
+    return service.pool_summary()
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出代理池管理清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "proxy", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条代理节点明细；不存在时给出可读的错误说明。"""
@@ -50,16 +66,9 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条代理节点执行提交校验、启用节点、停用节点；不允许的动作会被拦下并说明原因。"""
+    """对单条代理节点执行提交校验、启用节点、停用节点、上报异常；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出代理池管理清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "proxy", "total": total, "items": items}
